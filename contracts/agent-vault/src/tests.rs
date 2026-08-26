@@ -1,4 +1,7 @@
+mod malicious_token;
+
 use crate::{AgentVault, AgentVaultClient, DataKey, TaskStatus, VaultError};
+use malicious_token::{MaliciousToken, MaliciousTokenClient, ReentryAction, ReentryConfig};
 use soroban_sdk::testutils::storage::Persistent as _;
 use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
 use soroban_sdk::{token, Address, Env, IntoVal, Symbol, Val};
@@ -3847,4 +3850,252 @@ fn test_fee_change_not_retroactive() {
     // Total orchestrator: 1000 (full, no fee) + 900 (after 10% fee) = 1900
     assert_eq!(test_env.token_client.balance(&orchestrator), 1_900);
     assert_eq!(test_env.client.get_accrued_fees(&test_env.usdc_sac), 100);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Reentrancy hardening (#104): adversarial malicious-token tests
+// ─────────────────────────────────────────────────────────────────────────
+
+struct MaliciousSetup {
+    env: Env,
+    admin: Address,
+    mal_token: Address,
+    mal_client: MaliciousTokenClient<'static>,
+    contract_id: Address,
+    client: AgentVaultClient<'static>,
+}
+
+fn setup_malicious() -> MaliciousSetup {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let mal_token = env.register(MaliciousToken, ());
+    let mal_client = MaliciousTokenClient::new(&env, &mal_token);
+
+    let contract_id = env.register(AgentVault, ());
+    let client = AgentVaultClient::new(&env, &contract_id);
+
+    // init() needs a real-shaped usdc_sac address for the required-asset
+    // slot; the malicious token is added as an additional supported asset.
+    let usdc_sac = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    client.init(&admin, &usdc_sac);
+    client.add_asset(&admin, &mal_token);
+
+    MaliciousSetup {
+        env,
+        admin,
+        mal_token,
+        mal_client,
+        contract_id,
+        client,
+    }
+}
+
+fn disarmed_config(setup: &MaliciousSetup) -> ReentryConfig {
+    // A neutral config with `action = None`; individual tests overwrite the
+    // fields relevant to the action they arm.
+    let zero_addr = setup.admin.clone();
+    ReentryConfig {
+        vault: setup.contract_id.clone(),
+        action: ReentryAction::None,
+        withdraw_user: zero_addr.clone(),
+        withdraw_asset: setup.mal_token.clone(),
+        withdraw_amount: 0,
+        release_orchestrator: zero_addr.clone(),
+        release_task_id: 0,
+        release_step_id: 0,
+        release_asset: setup.mal_token.clone(),
+        release_amount: 0,
+    }
+}
+
+#[test]
+fn test_reentrant_withdraw_cannot_double_withdraw() {
+    let setup = setup_malicious();
+    let user = Address::generate(&setup.env);
+
+    setup.mal_client.mint(&user, &1_000);
+    setup.client.deposit(&user, &setup.mal_token, &1_000);
+    assert_eq!(setup.client.get_balance(&user, &setup.mal_token), 1_000);
+
+    // Arm: while the vault is paying the user 600, the malicious token's
+    // transfer hook tries to withdraw ANOTHER 600 for the same user before
+    // the outer withdraw call has returned.
+    let mut cfg = disarmed_config(&setup);
+    cfg.action = ReentryAction::Withdraw;
+    cfg.withdraw_user = user.clone();
+    cfg.withdraw_asset = setup.mal_token.clone();
+    cfg.withdraw_amount = 600;
+    setup.mal_client.configure(&cfg);
+
+    setup.client.withdraw(&user, &setup.mal_token, &600);
+
+    // CEI fix: the first withdraw already debited the vault balance before
+    // calling transfer, so the re-entrant second withdraw for 600 must have
+    // been rejected (only 400 remained available).
+    assert!(setup.mal_client.reentry_attempted());
+    assert!(!setup.mal_client.reentry_succeeded());
+
+    // Exactly one payout of 600 left the vault — not 1200.
+    assert_eq!(setup.mal_client.balance(&user), 600);
+    assert_eq!(setup.client.get_balance(&user, &setup.mal_token), 400);
+    assert_eq!(setup.client.get_available(&user, &setup.mal_token), 400);
+}
+
+#[test]
+fn test_reentrant_release_payment_cannot_exceed_plan_cost() {
+    let setup = setup_malicious();
+    let user = Address::generate(&setup.env);
+    let orchestrator = Address::generate(&setup.env);
+
+    setup.mal_client.mint(&user, &1_000);
+    setup.client.deposit(&user, &setup.mal_token, &1_000);
+    setup.client.register_orchestrator(
+        &user,
+        &orchestrator,
+        &soroban_sdk::String::from_str(&setup.env, "mal-orchestrator"),
+    );
+    let task_id = setup
+        .client
+        .create_task(&orchestrator, &setup.mal_token, &1_000);
+
+    // Arm: while step 1 releases 700, the token's transfer hook tries to
+    // release a DIFFERENT step (step 2) for another 700 — which would blow
+    // past plan_cost (1000) if task.spent weren't bumped before the transfer.
+    let mut cfg = disarmed_config(&setup);
+    cfg.action = ReentryAction::ReleasePayment;
+    cfg.release_orchestrator = orchestrator.clone();
+    cfg.release_task_id = task_id;
+    cfg.release_step_id = 2;
+    cfg.release_asset = setup.mal_token.clone();
+    cfg.release_amount = 700;
+    setup.mal_client.configure(&cfg);
+
+    setup
+        .client
+        .release_payment(&orchestrator, &task_id, &1, &setup.mal_token, &700);
+
+    assert!(setup.mal_client.reentry_attempted());
+    assert!(!setup.mal_client.reentry_succeeded());
+
+    let task = setup.client.get_task(&task_id).unwrap();
+    assert!(task.spent <= task.plan_cost);
+    assert_eq!(task.spent, 700);
+    assert_eq!(setup.mal_client.balance(&orchestrator), 700);
+}
+
+#[test]
+fn test_cross_function_reentrancy_release_payment_into_withdraw() {
+    let setup = setup_malicious();
+    let user = Address::generate(&setup.env);
+    let orchestrator = Address::generate(&setup.env);
+
+    // Extra unlocked funds sitting in the user's balance, outside the task,
+    // that a cross-function reentrant withdraw would try to drain.
+    setup.mal_client.mint(&user, &1_500);
+    setup.client.deposit(&user, &setup.mal_token, &1_500);
+    setup.client.register_orchestrator(
+        &user,
+        &orchestrator,
+        &soroban_sdk::String::from_str(&setup.env, "mal-orchestrator-2"),
+    );
+    let task_id = setup
+        .client
+        .create_task(&orchestrator, &setup.mal_token, &500);
+    // Available balance outside the task's locked 500: 1500 - 500 = 1000.
+    assert_eq!(setup.client.get_available(&user, &setup.mal_token), 1_000);
+
+    // Arm: release_payment's transfer hook re-enters as a WITHDRAW for the
+    // user, not another release_payment.
+    let mut cfg = disarmed_config(&setup);
+    cfg.action = ReentryAction::Withdraw;
+    cfg.withdraw_user = user.clone();
+    cfg.withdraw_asset = setup.mal_token.clone();
+    cfg.withdraw_amount = 1_000;
+    setup.mal_client.configure(&cfg);
+
+    setup
+        .client
+        .release_payment(&orchestrator, &task_id, &1, &setup.mal_token, &500);
+
+    // The cross-function reentrant withdraw is legitimate on its own (the
+    // 1000 available balance is real and untouched by the task) — CEI
+    // ordering doesn't need to block it, only ensure accounting stays
+    // consistent. release_payment never touches asset_account.balance
+    // directly (only withdraw and finalize_task do), so the vault ledger
+    // here must equal deposit minus whatever the reentrant withdraw paid
+    // out — independent of the orchestrator's separate payout.
+    assert!(setup.mal_client.reentry_attempted());
+    let user_asset_balance = setup.client.get_balance(&user, &setup.mal_token);
+    let user_token_balance = setup.mal_client.balance(&user);
+    let orch_token_balance = setup.mal_client.balance(&orchestrator);
+
+    assert_eq!(orch_token_balance, 500);
+    assert!(user_token_balance == 0 || user_token_balance == 1_000);
+    assert_eq!(
+        user_asset_balance,
+        1_500 - user_token_balance,
+        "vault ledger must exactly match tokens actually paid out via withdraw"
+    );
+    // The task's 500 stays locked until finalize_task runs (not yet called
+    // here), so available balance reflects that regardless of the reentrant
+    // withdraw's outcome.
+    assert_eq!(
+        setup.client.get_available(&user, &setup.mal_token),
+        user_asset_balance - 500
+    );
+}
+
+#[test]
+fn test_finalize_task_dispute_reentry_blocked_by_completed_flag() {
+    let setup = setup_malicious();
+    let user = Address::generate(&setup.env);
+    let orchestrator = Address::generate(&setup.env);
+
+    setup.mal_client.mint(&user, &1_000);
+    setup.client.deposit(&user, &setup.mal_token, &1_000);
+    setup.client.register_orchestrator(
+        &user,
+        &orchestrator,
+        &soroban_sdk::String::from_str(&setup.env, "mal-orchestrator-3"),
+    );
+    let task_id = setup
+        .client
+        .create_task(&orchestrator, &setup.mal_token, &1_000);
+    setup
+        .client
+        .set_dispute_resolver(&setup.admin, &setup.admin);
+    setup.client.raise_dispute(&user, &task_id);
+
+    // Arm: the dispute refund/payout transfer's hook tries to re-enter with
+    // ANOTHER withdraw before this contract call returns.
+    let mut cfg = disarmed_config(&setup);
+    cfg.action = ReentryAction::Withdraw;
+    cfg.withdraw_user = user.clone();
+    cfg.withdraw_asset = setup.mal_token.clone();
+    cfg.withdraw_amount = 500;
+    setup.mal_client.configure(&cfg);
+
+    setup
+        .client
+        .resolve_dispute(&setup.admin, &task_id, &500, &500);
+
+    // The full 1000 was locked into this single task, so
+    // finalize_task's asset_account.balance write (committed before either
+    // dispute transfer runs) already brings the user's vault balance to 0.
+    // The reentrant withdraw therefore has nothing left to take — proving
+    // task.completed and the balance write are both visible to the
+    // reentrant call before any token leaves the contract.
+    assert!(setup.mal_client.reentry_attempted());
+    assert!(!setup.mal_client.reentry_succeeded());
+
+    let task = setup.client.get_task(&task_id).unwrap();
+    assert!(task.completed);
+    assert_eq!(setup.client.get_balance(&user, &setup.mal_token), 0);
+    // Refund (500) + orchestrator payout (500) == plan_cost, paid exactly once.
+    assert_eq!(setup.mal_client.balance(&user), 500);
+    assert_eq!(setup.mal_client.balance(&orchestrator), 500);
 }
