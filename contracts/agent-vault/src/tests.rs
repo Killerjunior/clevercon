@@ -1,4 +1,4 @@
-﻿mod malicious_token;
+mod malicious_token;
 
 use crate::{AgentVault, AgentVaultClient, DataKey, TaskStatus, VaultError};
 use malicious_token::{MaliciousToken, MaliciousTokenClient, ReentryAction, ReentryConfig};
@@ -229,7 +229,7 @@ fn test_withdraw_insufficient_fails() {
 
 #[test]
 fn test_withdraw_blocked_active_task() {
-    // After #39, an active task no longer blocks withdrawal outright â€” only the
+    // After #39, an active task no longer blocks withdrawal outright — only the
     // portion locked by the task for that asset is protected.
     let test_env = setup_test();
     test_env.client.init(&test_env.admin, &test_env.usdc_sac);
@@ -246,7 +246,7 @@ fn test_withdraw_blocked_active_task() {
         .client
         .register_orchestrator(&user, &orchestrator, &name);
 
-    // Lock 100 in an active task â†’ 500 of the 600 stays unlocked.
+    // Lock 100 in an active task → 500 of the 600 stays unlocked.
     test_env
         .client
         .create_task(&orchestrator, &test_env.usdc_sac, &100);
@@ -290,7 +290,7 @@ fn test_withdraw_other_asset_while_task_active() {
         .client
         .create_task(&orchestrator, &test_env.usdc_sac, &600);
 
-    // Deposit asset B â€” unrelated to the task.
+    // Deposit asset B — unrelated to the task.
     asset_b_admin.mint(&user, &500);
     test_env.client.deposit(&user, &asset_b, &500);
 
@@ -1574,7 +1574,7 @@ fn test_remove_nonexistent_asset_leaves_index_unchanged() {
     let test_env = setup_test();
     test_env.client.init(&test_env.admin, &test_env.usdc_sac);
 
-    // An asset that was never whitelisted â€” removal is a harmless no-op.
+    // An asset that was never whitelisted — removal is a harmless no-op.
     let never_added = test_env
         .env
         .register_stellar_asset_contract_v2(test_env.admin.clone())
@@ -2414,7 +2414,7 @@ fn test_lowering_cap_below_current_count_does_not_affect_existing_tasks() {
     assert_eq!(third_task_id, 3);
 }
 
-// â”€â”€ Admin key rotation tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Admin key rotation tests ─────────────────────────────────────────────────
 
 /// Positive: admin rotates to new_admin successfully.
 #[test]
@@ -2439,7 +2439,7 @@ fn test_old_admin_cannot_pause_after_rotation() {
 
     t.client.update_admin(&t.admin, &new_admin);
 
-    // Old admin tries to pause â€” must fail
+    // Old admin tries to pause — must fail
     let result = t.client.try_pause(&t.admin);
     assert!(result.is_err());
 }
@@ -2465,7 +2465,7 @@ fn test_non_admin_cannot_update_admin() {
     let attacker = Address::generate(&t.env);
     let new_admin = Address::generate(&t.env);
 
-    // attacker is not the stored admin â€” must panic
+    // attacker is not the stored admin — must panic
     t.client.update_admin(&attacker, &new_admin);
 }
 
@@ -3456,7 +3456,7 @@ fn test_dispute_resolution_does_not_claw_back_spent() {
     assert_eq!(account.total_spent, 200); // only the released amount is spending
 }
 
-// â”€â”€ Protocol Fee Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Protocol Fee Tests ────────────────────────────────────────────────────────
 
 // Helper: set up a full task scenario with a funded user+orchestrator ready to
 // call release_payment. Returns (user, orchestrator, task_id).
@@ -3478,7 +3478,7 @@ fn setup_fee_task(test_env: &TestEnv, plan_cost: i128) -> (Address, Address, u64
     (user, orchestrator, task_id)
 }
 
-// 18a. set_fee â€” basic read-back
+// 18a. set_fee — basic read-back
 
 #[test]
 fn test_set_fee_and_get_fee() {
@@ -3495,7 +3495,7 @@ fn test_set_fee_and_get_fee() {
     assert_eq!(rec, Some(recipient));
 }
 
-// 18b. set_fee â€” default is zero / None
+// 18b. set_fee — default is zero / None
 
 #[test]
 fn test_get_fee_default() {
@@ -3507,7 +3507,7 @@ fn test_get_fee_default() {
     assert_eq!(rec, None);
 }
 
-// 18c. set_fee â€” exceeds cap is rejected
+// 18c. set_fee — exceeds cap is rejected
 
 #[test]
 fn test_set_fee_exceeds_cap() {
@@ -3518,7 +3518,7 @@ fn test_set_fee_exceeds_cap() {
     assert!(result == Err(Ok(VaultError::FeeBpsExceedsCap)));
 }
 
-// 18d. set_fee â€” exact cap (1000 bps) is accepted
+// 18d. set_fee — exact cap (1000 bps) is accepted
 
 #[test]
 fn test_set_fee_at_cap() {
@@ -3533,7 +3533,7 @@ fn test_set_fee_at_cap() {
     assert_eq!(bps, 1000);
 }
 
-// 18e. set_fee â€” non-admin is rejected
+// 18e. set_fee — non-admin is rejected
 
 #[test]
 fn test_set_fee_unauthorized() {
@@ -3545,7 +3545,7 @@ fn test_set_fee_unauthorized() {
     assert!(result == Err(Ok(VaultError::Unauthorized)));
 }
 
-// 18f. release_payment with fee â€” correct split and accrual
+// 18f. release_payment with fee — correct split and accrual
 
 #[test]
 fn test_release_payment_fee_accrual() {
@@ -3570,7 +3570,7 @@ fn test_release_payment_fee_accrual() {
     assert_eq!(test_env.client.get_accrued_fees(&test_env.usdc_sac), 10);
 }
 
-// 18g. claim_fees â€” transfers accrued fees and zeroes the balance
+// 18g. claim_fees — transfers accrued fees and zeroes the balance
 
 #[test]
 fn test_claim_fees() {
@@ -3597,7 +3597,7 @@ fn test_claim_fees() {
     assert_eq!(test_env.client.get_accrued_fees(&test_env.usdc_sac), 0);
 }
 
-// 18h. claim_fees â€” no-op when nothing accrued returns NoFeesAccrued
+// 18h. claim_fees — no-op when nothing accrued returns NoFeesAccrued
 
 #[test]
 fn test_claim_fees_nothing_accrued() {
@@ -3615,7 +3615,7 @@ fn test_claim_fees_nothing_accrued() {
     assert!(result == Err(Ok(VaultError::NoFeesAccrued)));
 }
 
-// 18i. claim_fees â€” wrong caller is rejected
+// 18i. claim_fees — wrong caller is rejected
 
 #[test]
 fn test_claim_fees_wrong_caller() {
@@ -3639,7 +3639,7 @@ fn test_claim_fees_wrong_caller() {
     assert!(result == Err(Ok(VaultError::Unauthorized)));
 }
 
-// 18j. Zero-fee path â€” zero bps behaves exactly like no fee configured
+// 18j. Zero-fee path — zero bps behaves exactly like no fee configured
 //      (orchestrator receives full amount, no accrual)
 
 #[test]
@@ -3663,7 +3663,7 @@ fn test_zero_fee_no_deduction() {
     assert_eq!(test_env.client.get_accrued_fees(&test_env.usdc_sac), 0);
 }
 
-// 18k. Zero-fee path â€” fee set but recipient is None
+// 18k. Zero-fee path — fee set but recipient is None
 
 #[test]
 fn test_fee_no_recipient_no_deduction() {
@@ -3682,7 +3682,7 @@ fn test_fee_no_recipient_no_deduction() {
     assert_eq!(test_env.client.get_accrued_fees(&test_env.usdc_sac), 0);
 }
 
-// 18l. Dust: amount so small fee rounds to 0 â€” orchestrator gets full amount
+// 18l. Dust: amount so small fee rounds to 0 — orchestrator gets full amount
 
 #[test]
 fn test_fee_dust_rounds_to_zero() {
@@ -3704,7 +3704,7 @@ fn test_fee_dust_rounds_to_zero() {
     assert_eq!(test_env.client.get_accrued_fees(&test_env.usdc_sac), 0);
 }
 
-// 18m. Recipient equals orchestrator â€” allowed by spec
+// 18m. Recipient equals orchestrator — allowed by spec
 
 #[test]
 fn test_fee_recipient_is_orchestrator() {
@@ -3752,7 +3752,7 @@ fn test_fee_cumulative_accrual() {
     }
 
     assert_eq!(test_env.client.get_accrued_fees(&test_env.usdc_sac), 60);
-    // Orchestrator received 980 Ã— 3 = 2940
+    // Orchestrator received 980 × 3 = 2940
     assert_eq!(test_env.token_client.balance(&orchestrator), 2_940);
 }
 
@@ -3832,7 +3832,7 @@ fn test_fee_change_not_retroactive() {
         .set_fee(&test_env.admin, &0, &Some(recipient.clone()));
 
     let (_, orchestrator, task_id) = setup_fee_task(&test_env, 2_000);
-    // First release at 0 bps â€” no fee
+    // First release at 0 bps — no fee
     test_env
         .client
         .release_payment(&orchestrator, &task_id, &1, &test_env.usdc_sac, &1_000);
@@ -3843,7 +3843,7 @@ fn test_fee_change_not_retroactive() {
         .client
         .set_fee(&test_env.admin, &1000, &Some(recipient.clone()));
 
-    // Second release at 10% â€” fee = 100
+    // Second release at 10% — fee = 100
     test_env
         .client
         .release_payment(&orchestrator, &task_id, &2, &test_env.usdc_sac, &1_000);
@@ -3852,9 +3852,9 @@ fn test_fee_change_not_retroactive() {
     assert_eq!(test_env.client.get_accrued_fees(&test_env.usdc_sac), 100);
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────
 // Reentrancy hardening (#104): adversarial malicious-token tests
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────
 
 struct MaliciousSetup {
     env: Env,
@@ -3939,7 +3939,7 @@ fn test_reentrant_withdraw_cannot_double_withdraw() {
     assert!(setup.mal_client.reentry_attempted());
     assert!(!setup.mal_client.reentry_succeeded());
 
-    // Exactly one payout of 600 left the vault â€” not 1200.
+    // Exactly one payout of 600 left the vault — not 1200.
     assert_eq!(setup.mal_client.balance(&user), 600);
     assert_eq!(setup.client.get_balance(&user, &setup.mal_token), 400);
     assert_eq!(setup.client.get_available(&user, &setup.mal_token), 400);
@@ -3963,7 +3963,7 @@ fn test_reentrant_release_payment_cannot_exceed_plan_cost() {
         .create_task(&orchestrator, &setup.mal_token, &1_000);
 
     // Arm: while step 1 releases 700, the token's transfer hook tries to
-    // release a DIFFERENT step (step 2) for another 700 â€” which would blow
+    // release a DIFFERENT step (step 2) for another 700 — which would blow
     // past plan_cost (1000) if task.spent weren't bumped before the transfer.
     let mut cfg = disarmed_config(&setup);
     cfg.action = ReentryAction::ReleasePayment;
@@ -4022,18 +4022,23 @@ fn test_cross_function_reentrancy_release_payment_into_withdraw() {
         .release_payment(&orchestrator, &task_id, &1, &setup.mal_token, &500);
 
     // The cross-function reentrant withdraw is legitimate on its own (the
-    // 1000 available balance is real and untouched by the task) â€” CEI
+    // 1000 available balance is real and untouched by the task) — CEI
     // ordering doesn't need to block it, only ensure accounting stays
     // consistent. release_payment never touches asset_account.balance
     // directly (only withdraw and finalize_task do), so the vault ledger
     // here must equal deposit minus whatever the reentrant withdraw paid
-    // out â€” independent of the orchestrator's separate payout.
+    // out — independent of the orchestrator's separate payout.
     assert!(setup.mal_client.reentry_attempted());
     let user_asset_balance = setup.client.get_balance(&user, &setup.mal_token);
     let user_token_balance = setup.mal_client.balance(&user);
     let orch_token_balance = setup.mal_client.balance(&orchestrator);
 
     assert_eq!(orch_token_balance, 500);
+    // Empirically the reentrant withdraw here does not succeed (verified via
+    // cargo test, not assumed): reentry_succeeded() is false and the vault's
+    // own balance write never committed, so user_token_balance stays 0. The
+    // safety property under test doesn't depend on which way this goes --
+    // only that whatever happens is consistent and no double payout occurs.
     assert!(!setup.mal_client.reentry_succeeded());
     assert_eq!(user_token_balance, 0);
     assert_eq!(
@@ -4087,7 +4092,7 @@ fn test_finalize_task_dispute_reentry_blocked_by_completed_flag() {
     // The full 1000 was locked into this single task, so
     // finalize_task's asset_account.balance write (committed before either
     // dispute transfer runs) already brings the user's vault balance to 0.
-    // The reentrant withdraw therefore has nothing left to take â€” proving
+    // The reentrant withdraw therefore has nothing left to take — proving
     // task.completed and the balance write are both visible to the
     // reentrant call before any token leaves the contract.
     assert!(setup.mal_client.reentry_attempted());
@@ -4099,4 +4104,60 @@ fn test_finalize_task_dispute_reentry_blocked_by_completed_flag() {
     // Refund (500) + orchestrator payout (500) == plan_cost, paid exactly once.
     assert_eq!(setup.mal_client.balance(&user), 500);
     assert_eq!(setup.mal_client.balance(&orchestrator), 500);
+}
+
+#[test]
+fn test_paused_reentrant_release_payment_blocked_via_withdraw_hook() {
+    let setup = setup_malicious();
+    let user = Address::generate(&setup.env);
+    let orchestrator = Address::generate(&setup.env);
+
+    setup.mal_client.mint(&user, &1_000);
+    setup.client.deposit(&user, &setup.mal_token, &1_000);
+    setup.client.register_orchestrator(
+        &user,
+        &orchestrator,
+        &soroban_sdk::String::from_str(&setup.env, "mal-orchestrator-4"),
+    );
+    // create_task itself checks require_not_paused, so the task must exist
+    // BEFORE the vault is paused.
+    let task_id = setup
+        .client
+        .create_task(&orchestrator, &setup.mal_token, &400);
+    let task_before = setup.client.get_task(&task_id).unwrap();
+
+    setup.client.pause(&setup.admin);
+
+    // withdraw intentionally bypasses the pause guard (it's the user's exit
+    // hatch), so it's still callable here. Arm the hook to try a reentrant
+    // release_payment from inside withdraw's transfer — release_payment DOES
+    // check require_not_paused, so this must be rejected even though it was
+    // triggered from a call that itself ignores pause.
+    let mut cfg = disarmed_config(&setup);
+    cfg.action = ReentryAction::ReleasePayment;
+    cfg.release_orchestrator = orchestrator.clone();
+    cfg.release_task_id = task_id;
+    cfg.release_step_id = 1;
+    cfg.release_asset = setup.mal_token.clone();
+    cfg.release_amount = 400;
+    setup.mal_client.configure(&cfg);
+
+    // available = balance(1000) - locked(400) = 600.
+    setup.client.withdraw(&user, &setup.mal_token, &600);
+
+    assert!(setup.mal_client.reentry_attempted());
+    assert!(!setup.mal_client.reentry_succeeded());
+
+    // The reentrant release_payment must not have moved anything: task
+    // untouched, nothing paid to the orchestrator, locked funds untouched.
+    let task_after = setup.client.get_task(&task_id).unwrap();
+    assert_eq!(task_after.spent, task_before.spent);
+    assert!(!task_after.completed);
+    assert_eq!(setup.mal_client.balance(&orchestrator), 0);
+
+    // The outer withdraw (which does bypass pause) completed normally.
+    assert_eq!(setup.mal_client.balance(&user), 600);
+    assert_eq!(setup.client.get_balance(&user, &setup.mal_token), 400);
+    // Locked (400) is untouched by either call, so available is 0.
+    assert_eq!(setup.client.get_available(&user, &setup.mal_token), 0);
 }
