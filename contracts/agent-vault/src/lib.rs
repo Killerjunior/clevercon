@@ -511,6 +511,13 @@ impl AgentVault {
     // Deposits & Withdrawals
 
     /// Deposit supported tokens from user's external wallet into their vault balance.
+    ///
+    /// CEI note: this is a pull (`user` is the token's `from`), so the token
+    /// contract runs as part of a transfer the CALLER authorized against
+    /// themselves, not against the vault's funds — a re-entrant call made
+    /// from inside this transfer sees `asset_account.balance` still at its
+    /// PRE-deposit value, which cannot be leveraged for a double-credit.
+    /// Audited for CEI; no reordering was needed.
     pub fn deposit(
         env: Env,
         user: Address,
@@ -565,6 +572,9 @@ impl AgentVault {
     /// Only the unlocked portion (`balance - locked`) of the given asset may be
     /// withdrawn; funds locked by active tasks for that asset stay reserved, so a
     /// withdrawal succeeds even while other funds — or other assets — are locked.
+    ///
+    /// CEI ordering: `asset_account.balance` is debited before the external
+    /// transfer. See the comment at the transfer call site — do not reorder.
     pub fn withdraw(
         env: Env,
         user: Address,
@@ -608,12 +618,19 @@ impl AgentVault {
         }
 
         Self::extend_instance_ttl(&env);
-        let token_client = token::Client::new(&env, &asset);
-        token_client.transfer(&env.current_contract_address(), &user, &amount);
 
+        // CEI ordering: all state writes for this withdrawal are committed
+        // BEFORE the external token transfer below. A token whose `transfer`
+        // re-enters this contract (e.g. via a transfer hook) will observe the
+        // already-debited balance, so a second `withdraw` in the same call
+        // stack cannot double-spend the same funds. Do not move the transfer
+        // above this block.
         asset_account.balance -= amount;
         env.storage().persistent().set(&asset_key, &asset_account);
         Self::extend_persistent_ttl(&env, &asset_key);
+
+        let token_client = token::Client::new(&env, &asset);
+        token_client.transfer(&env.current_contract_address(), &user, &amount);
 
         WithdrawEvent {
             user: user.clone(),
@@ -854,6 +871,10 @@ impl AgentVault {
 
     /// Release funds for one step: contract transfers `amount` tokens to the ORCHESTRATOR.
     /// Returns true on success.
+    ///
+    /// CEI ordering: the step is recorded and `task.spent` is bumped before
+    /// the external transfer. See the comment at the transfer call site —
+    /// do not reorder.
     pub fn release_payment(
         env: Env,
         orchestrator: Address,
@@ -906,7 +927,6 @@ impl AgentVault {
         Self::record_step_release(&env, task_id, step_id, amount)?;
 
         Self::extend_instance_ttl(&env);
-        let token_client = token::Client::new(&env, &asset);
 
         // ── Protocol fee deduction ──────────────────────────────────────
         // Fee rounds DOWN (integer division), so the orchestrator always
@@ -918,11 +938,17 @@ impl AgentVault {
         let fee = Self::compute_fee(&env, amount);
         let orchestrator_payout = amount.checked_sub(fee).expect("fee arithmetic underflow");
 
-        token_client.transfer(
-            &env.current_contract_address(),
-            &orchestrator,
-            &orchestrator_payout,
-        );
+        // CEI ordering: task.spent and the fee accrual are both written
+        // BEFORE the external token transfers below. record_step_release
+        // above already makes this exact (task_id, step_id) idempotent
+        // against re-entry; bumping task.spent here additionally protects
+        // the task's overall plan_cost cap against a DIFFERENT step_id (or
+        // a different fund-moving function, e.g. withdraw) being invoked
+        // re-entrantly from inside the transfer below. Do not move the
+        // transfers above this block.
+        task.spent += amount;
+        env.storage().persistent().set(&task_key, &task);
+        Self::extend_persistent_ttl(&env, &task_key);
 
         // Accrue the fee (if any) to the configured recipient's claimable balance.
         if fee > 0 {
@@ -948,9 +974,12 @@ impl AgentVault {
             }
         }
 
-        task.spent += amount;
-        env.storage().persistent().set(&task_key, &task);
-        Self::extend_persistent_ttl(&env, &task_key);
+        let token_client = token::Client::new(&env, &asset);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &orchestrator,
+            &orchestrator_payout,
+        );
 
         ReleaseEvent {
             user: task.user.clone(),
@@ -1397,20 +1426,6 @@ impl AgentVault {
             }
         }
 
-        if let Some((refund_to_user, payout_to_orchestrator)) = dispute_split {
-            let token_client = token::Client::new(env, &task.asset);
-            if refund_to_user > 0 {
-                token_client.transfer(&env.current_contract_address(), &task.user, &refund_to_user);
-            }
-            if payout_to_orchestrator > 0 {
-                token_client.transfer(
-                    &env.current_contract_address(),
-                    &task.orchestrator,
-                    &payout_to_orchestrator,
-                );
-            }
-        }
-
         let config_key = DataKey::UserConfig(task.user.clone());
         let mut config: UserConfig = env
             .storage()
@@ -1449,6 +1464,26 @@ impl AgentVault {
         env.storage().persistent().set(&task_key, &task);
         Self::extend_persistent_ttl(env, &task_key);
         Self::remove_task_step_releases(env, task_id);
+
+        // CEI ordering: task.completed, asset_account, and config are all
+        // committed above BEFORE the dispute-split transfers below. A token
+        // whose `transfer` re-enters this contract (e.g. via a transfer
+        // hook) will see task.completed == true and be rejected by the
+        // guard at the top of this function, so it cannot trigger a second
+        // payout for the same task. Do not move these transfers earlier.
+        if let Some((refund_to_user, payout_to_orchestrator)) = dispute_split {
+            let token_client = token::Client::new(env, &task.asset);
+            if refund_to_user > 0 {
+                token_client.transfer(&env.current_contract_address(), &task.user, &refund_to_user);
+            }
+            if payout_to_orchestrator > 0 {
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &task.orchestrator,
+                    &payout_to_orchestrator,
+                );
+            }
+        }
 
         if dispute_split.is_none() {
             let refund = task.plan_cost - task.spent;
