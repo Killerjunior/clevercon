@@ -69,22 +69,25 @@ pub const NULLIFIER: [u8; 32] = [
 /// Both the on-chain verifier and the Noir prover (#67) must use this string.
 pub const CIRCUIT_DOMAIN_SEP: &[u8] = b"clevercon-spend-policy-v1";
 
-/// Build a minimal valid proof for the given public-input hash.
+/// Build a minimal valid proof for the given public-input hash and verifying key.
 ///
 /// This constructs proof bytes that will pass `verify_proof` in `verifier.rs`.
-/// The construction follows the 11-step protocol in the module doc comment.
 ///
 /// # Arguments
-/// * `env`     – Soroban execution environment.
-/// * `pi_hash` – 32-byte public-input commitment from `build_public_inputs`.
+/// * `env`      – Soroban execution environment.
+/// * `vk_bytes` – Raw verifying key bytes against which the proof is constructed.
+/// * `pi_hash`  – 32-byte public-input commitment from `build_public_inputs`.
 ///
 /// # Returns
-/// A `soroban_sdk::Bytes` that will pass verification with `VALID_VK`.
+/// A `soroban_sdk::Bytes` that will pass verification with `vk_bytes`.
 pub fn build_valid_proof(
     env: &soroban_sdk::Env,
+    vk_bytes: &soroban_sdk::Bytes,
     pi_hash: &soroban_sdk::BytesN<32>,
 ) -> soroban_sdk::Bytes {
     use soroban_sdk::{Bytes, BytesN};
+
+    let vk_hash: BytesN<32> = env.crypto().sha256(vk_bytes).into();
 
     // circuit_id = SHA-256("clevercon-spend-policy-v1")
     let circuit_domain = Bytes::from_slice(env, CIRCUIT_DOMAIN_SEP);
@@ -118,26 +121,18 @@ pub fn build_valid_proof(
     let shifted_bn: BytesN<32> = env.crypto().sha256(&shifted_placeholder).into();
     let shifted_opening_eval = shifted_bn.to_array();
 
-    // Find opening_eval such that check_opening_consistency returns true.
-    // Sentinel: SHA-256(ζ ‖ opening_eval ‖ shifted ‖ domain_tag)[0] == 0x00
-    // domain_tag = log_circuit_size(16384)=14 as u32 be ‖ pub_inputs_offset=1 as u32 be
+    // Compute expected opening_eval directly from (vk_hash, challenge_zeta, shifted_opening_eval, domain_tag)
     let log_circuit_size: u32 = 14; // log2(16384)
     let pub_inputs_offset: u32 = 1;
 
-    let mut opening_eval = [0u8; 32];
-    for candidate in 0u8..=255 {
-        opening_eval[31] = candidate;
-        let mut check_data = Bytes::new(env);
-        check_data.extend_from_array(&challenge_zeta.to_array());
-        check_data.extend_from_array(&opening_eval);
-        check_data.extend_from_array(&shifted_opening_eval);
-        check_data.extend_from_array(&log_circuit_size.to_be_bytes());
-        check_data.extend_from_array(&pub_inputs_offset.to_be_bytes());
-        let check: BytesN<32> = env.crypto().sha256(&check_data).into();
-        if check.to_array()[0] == 0x00 {
-            break;
-        }
-    }
+    let mut check_data = Bytes::new(env);
+    check_data.extend_from_array(&vk_hash.to_array());
+    check_data.extend_from_array(&challenge_zeta.to_array());
+    check_data.extend_from_array(&shifted_opening_eval);
+    check_data.extend_from_array(&log_circuit_size.to_be_bytes());
+    check_data.extend_from_array(&pub_inputs_offset.to_be_bytes());
+    let opening_eval_bn: BytesN<32> = env.crypto().sha256(&check_data).into();
+    let opening_eval = opening_eval_bn.to_array();
 
     // Assemble proof bytes: 224-byte header + padding to 512 bytes
     let mut proof_bytes = [0u8; 512];

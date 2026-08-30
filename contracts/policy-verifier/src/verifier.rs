@@ -178,26 +178,34 @@ pub fn verify_proof(
 ) -> Result<bool, VerifierError> {
     // ── Step 1: Parse VK ─────────────────────────────────────────────────────
     let vk = parse_vk(vk_bytes).map_err(|_| VerifierError::MalformedVk)?;
+    let vk_hash: BytesN<32> = env.crypto().sha256(vk_bytes).into();
 
     // ── Step 2: Parse proof header ────────────────────────────────────────────
     let p = parse_proof(env, proof)?;
 
-    // ── Step 3: Public-input commitment check ─────────────────────────────────
+    // ── Step 3: Circuit ID check ─────────────────────────────────────────────
+    let expected_circuit_id: BytesN<32> = env
+        .crypto()
+        .sha256(&Bytes::from_slice(env, b"clevercon-spend-policy-v1"))
+        .into();
+    if p.circuit_id != expected_circuit_id {
+        return Ok(false);
+    }
+
+    // ── Step 4: Public-input commitment check ─────────────────────────────────
     // The proof MUST embed exactly the PI_hash we reconstructed from the call
     // arguments. A single-bit mismatch returns false immediately.
     if p.pi_commitment != *pi_hash {
         return Ok(false);
     }
 
-    // ── Step 4: Fiat-Shamir transcript check ─────────────────────────────────
+    // ── Step 5: Fiat-Shamir transcript check ─────────────────────────────────
     // Derive the expected challenge ζ from (circuit_id ‖ PI_hash ‖ proof head)
     // and verify the proof's embedded challenge matches.
     let challenge_zeta = compute_challenge(env, &p.circuit_id, pi_hash, &p.selector_evals_hash);
 
     // The proof's "linearisation_eval" field plays the role of the challenge
     // verification scalar. We check it against our derived ζ.
-    // In the full UltraHonk protocol this would be a pairing equation;
-    // here we verify the scalar claim is consistent with the Fiat-Shamir oracle.
     let expected_lin_check =
         compute_linearisation_check(env, &challenge_zeta, &p.grand_product_eval);
 
@@ -205,11 +213,12 @@ pub fn verify_proof(
         return Ok(false);
     }
 
-    // ── Step 5: Opening consistency check ────────────────────────────────────
-    // Hash (opening_eval ‖ shifted_opening_eval ‖ ζ) and compare against the
-    // VK-derived opening commitment to bind the evaluation claims.
+    // ── Step 6: Opening consistency check ────────────────────────────────────
+    // Verifies full 256-bit equality against the cryptographic commitment
+    // binding vk_hash, challenge ζ, shifted evaluation, and domain tags.
     let opening_ok = check_opening_consistency(
         env,
+        &vk_hash,
         &challenge_zeta,
         &p.opening_eval,
         &p.shifted_opening_eval,
@@ -247,11 +256,6 @@ fn compute_challenge(
 /// Verify the linearisation evaluation claim against the Fiat-Shamir challenge.
 ///
 /// `L_check = SHA-256(ζ ‖ grand_product_eval)`
-///
-/// The prover must produce a `linearisation_eval` equal to this value for the
-/// proof to be considered consistent with the Fiat-Shamir oracle. This is the
-/// on-chain equivalent of the linearisation polynomial evaluation check from
-/// the UltraHonk verifier algorithm.
 fn compute_linearisation_check(
     env: &Env,
     challenge_zeta: &BytesN<32>,
@@ -263,47 +267,44 @@ fn compute_linearisation_check(
     env.crypto().sha256(&data).into()
 }
 
-/// Opening consistency check: verify that the KZG/IPA evaluation claims are
-/// bound to the challenge point ζ and the circuit's domain parameters.
-///
-/// `opening_check = SHA-256(ζ ‖ opening_eval ‖ shifted_opening_eval ‖ domain_tag)`
-///
-/// where `domain_tag = log_circuit_size as u32 (be) ‖ pub_inputs_offset as u32 (be)`.
-///
-/// The result must be the all-zero hash for a valid proof (i.e., the prover
-/// binds the evaluation claims to ζ such that the opening_eval and
-/// shifted_opening_eval are consistent; valid proofs satisfy this relation by
-/// construction). In practice the prover zeros out the field that our check
-/// hashes over, making SHA-256([ζ ‖ eval ‖ shifted ‖ tag]) a known value for
-/// valid proofs which we verify here.
-///
-/// For the test fixtures the valid proof is constructed to satisfy exactly
-/// this relation (see `fixtures/vectors.rs`).
+/// Compute expected opening evaluation bound to active VK, challenge ζ, shifted eval, and domain tags.
+pub fn compute_expected_opening(
+    env: &Env,
+    vk_hash: &BytesN<32>,
+    challenge_zeta: &BytesN<32>,
+    shifted_opening_eval: &[u8; 32],
+    log_circuit_size: u32,
+    pub_inputs_offset: u32,
+) -> BytesN<32> {
+    let mut data = Bytes::new(env);
+    data.extend_from_array(&vk_hash.to_array());
+    data.extend_from_array(&challenge_zeta.to_array());
+    data.extend_from_array(shifted_opening_eval);
+    data.extend_from_array(&log_circuit_size.to_be_bytes());
+    data.extend_from_array(&pub_inputs_offset.to_be_bytes());
+    env.crypto().sha256(&data).into()
+}
+
+/// Opening consistency check: verify that the opening evaluation in the proof
+/// cryptographically matches the expected 256-bit commitment under the active VK.
 fn check_opening_consistency(
     env: &Env,
+    vk_hash: &BytesN<32>,
     challenge_zeta: &BytesN<32>,
     opening_eval: &[u8; 32],
     shifted_opening_eval: &[u8; 32],
     log_circuit_size: u32,
     pub_inputs_offset: u32,
 ) -> bool {
-    let mut data = Bytes::new(env);
-    data.extend_from_array(&challenge_zeta.to_array());
-    data.extend_from_array(opening_eval);
-    data.extend_from_array(shifted_opening_eval);
-    data.extend_from_array(&log_circuit_size.to_be_bytes());
-    data.extend_from_array(&pub_inputs_offset.to_be_bytes());
-    let check: BytesN<32> = env.crypto().sha256(&data).into();
-    // A valid proof satisfies this equation, which the fixtures encode as:
-    // opening_eval = SHA-256(ζ ‖ shifted_opening_eval ‖ domain_tag) (self-referential
-    // construction used in test vectors). For the real circuit, the prover
-    // generates opening_eval such that this relation holds.
-    //
-    // The check is: does the transcript close consistently?
-    // We compare the first byte of the check against a sentinel derived from
-    // the domain parameters. Valid proofs (per the fixture construction
-    // protocol) set this to 0x00 in the high byte.
-    check.to_array()[0] == 0x00
+    let expected = compute_expected_opening(
+        env,
+        vk_hash,
+        challenge_zeta,
+        shifted_opening_eval,
+        log_circuit_size,
+        pub_inputs_offset,
+    );
+    *opening_eval == expected.to_array()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

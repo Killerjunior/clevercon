@@ -141,8 +141,8 @@ cargo clippy --all-targets -- -D warnings
 # Run tests
 cargo test
 
-# Build WASM
-cargo build --target wasm32-unknown-unknown --release
+# Build WASM with stellar-cli (Soroban 25+ / wasm32v1-none)
+stellar contract build
 ```
 
 ---
@@ -164,6 +164,7 @@ The test suite (`src/test.rs`) covers all acceptance criteria:
 - ✅ Proof too long → `InvalidProofLength`
 - ✅ Amount ≤ 0 → `InvalidAmount`
 - ✅ VK rotation → `get_vk_hash` changes, old proof fails
+- ✅ Wrong VK in proof → `false`
 - ✅ Purity: storage unchanged before/after `verify`
 - ✅ Determinism: same result across ledger sequences
 
@@ -171,13 +172,13 @@ The test suite (`src/test.rs`) covers all acceptance criteria:
 
 ## Fixtures
 
-`fixtures/vectors.rs` ships the canonical `(VK, public_inputs, proof)` triple
+`src/fixtures/vectors.rs` ships the canonical `(VK, public_inputs, proof)` triple
 for cross-testing with:
 - `contracts/agent-vault` (#63) — vault integration test
 - Orchestrator prover client (#67) — end-to-end proof lifecycle
 
-The `build_valid_proof(env, pi_hash)` helper constructs a proof that satisfies
-all five verification steps, enabling both positive and tampered-input tests.
+The `build_valid_proof(env, vk, pi_hash)` helper constructs a proof that satisfies
+all verification steps, enabling both positive and tampered-input tests.
 
 ---
 

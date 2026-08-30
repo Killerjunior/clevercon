@@ -159,7 +159,7 @@ fn test_verify_valid_proof_returns_true() {
     let commitment = BytesN::from_array(&env, &COMMITMENT);
     let nullifier = BytesN::from_array(&env, &NULLIFIER);
     let (_, pi_hash) = build_public_inputs(&env, &commitment, &payee, AMOUNT, &nullifier);
-    let proof = build_valid_proof(&env, &pi_hash);
+    let proof = build_valid_proof(&env, &vk, &pi_hash);
 
     let result = client.verify(&commitment, &payee, &AMOUNT, &nullifier, &proof);
     assert!(result, "valid proof must return true");
@@ -173,11 +173,12 @@ fn test_verify_valid_proof_returns_true() {
 fn test_verify_without_vk_returns_false() {
     let (env, _, _admin, client) = setup();
     // Do NOT call set_vk — VK is unset
+    let vk = Bytes::from_slice(&env, VALID_VK);
     let payee = Address::generate(&env);
     let commitment = BytesN::from_array(&env, &COMMITMENT);
     let nullifier = BytesN::from_array(&env, &NULLIFIER);
     let (_, pi_hash) = build_public_inputs(&env, &commitment, &payee, AMOUNT, &nullifier);
-    let proof = build_valid_proof(&env, &pi_hash);
+    let proof = build_valid_proof(&env, &vk, &pi_hash);
 
     let result = client.verify(&commitment, &payee, &AMOUNT, &nullifier, &proof);
     assert!(!result, "verify without VK must return false (fail-closed)");
@@ -197,7 +198,7 @@ fn test_verify_tampered_commitment_returns_false() {
     let commitment = BytesN::from_array(&env, &COMMITMENT);
     let nullifier = BytesN::from_array(&env, &NULLIFIER);
     let (_, pi_hash) = build_public_inputs(&env, &commitment, &payee, AMOUNT, &nullifier);
-    let proof = build_valid_proof(&env, &pi_hash);
+    let proof = build_valid_proof(&env, &vk, &pi_hash);
 
     // Pass a different commitment
     let mut bad = COMMITMENT;
@@ -219,7 +220,7 @@ fn test_verify_tampered_payee_returns_false() {
     let commitment = BytesN::from_array(&env, &COMMITMENT);
     let nullifier = BytesN::from_array(&env, &NULLIFIER);
     let (_, pi_hash) = build_public_inputs(&env, &commitment, &payee, AMOUNT, &nullifier);
-    let proof = build_valid_proof(&env, &pi_hash);
+    let proof = build_valid_proof(&env, &vk, &pi_hash);
 
     let result = client.verify(&commitment, &different_payee, &AMOUNT, &nullifier, &proof);
     assert!(!result, "tampered payee must return false");
@@ -235,7 +236,7 @@ fn test_verify_tampered_amount_returns_false() {
     let commitment = BytesN::from_array(&env, &COMMITMENT);
     let nullifier = BytesN::from_array(&env, &NULLIFIER);
     let (_, pi_hash) = build_public_inputs(&env, &commitment, &payee, AMOUNT, &nullifier);
-    let proof = build_valid_proof(&env, &pi_hash);
+    let proof = build_valid_proof(&env, &vk, &pi_hash);
 
     let wrong_amount = AMOUNT + 1;
     let result = client.verify(&commitment, &payee, &wrong_amount, &nullifier, &proof);
@@ -252,7 +253,7 @@ fn test_verify_tampered_nullifier_returns_false() {
     let commitment = BytesN::from_array(&env, &COMMITMENT);
     let nullifier = BytesN::from_array(&env, &NULLIFIER);
     let (_, pi_hash) = build_public_inputs(&env, &commitment, &payee, AMOUNT, &nullifier);
-    let proof = build_valid_proof(&env, &pi_hash);
+    let proof = build_valid_proof(&env, &vk, &pi_hash);
 
     let mut bad_null = NULLIFIER;
     bad_null[31] ^= 0x01;
@@ -276,7 +277,7 @@ fn test_verify_tampered_proof_pi_commitment_returns_false() {
     let commitment = BytesN::from_array(&env, &COMMITMENT);
     let nullifier = BytesN::from_array(&env, &NULLIFIER);
     let (_, pi_hash) = build_public_inputs(&env, &commitment, &payee, AMOUNT, &nullifier);
-    let proof = build_valid_proof(&env, &pi_hash);
+    let proof = build_valid_proof(&env, &vk, &pi_hash);
 
     // Flip one bit in the proof's pi_commitment (bytes [0..32])
     let mut proof_bytes = [0u8; 512];
@@ -300,7 +301,7 @@ fn test_verify_tampered_proof_linearisation_eval_returns_false() {
     let commitment = BytesN::from_array(&env, &COMMITMENT);
     let nullifier = BytesN::from_array(&env, &NULLIFIER);
     let (_, pi_hash) = build_public_inputs(&env, &commitment, &payee, AMOUNT, &nullifier);
-    let proof = build_valid_proof(&env, &pi_hash);
+    let proof = build_valid_proof(&env, &vk, &pi_hash);
 
     // Flip a bit in linearisation_eval (bytes [64..96])
     let mut proof_bytes = [0u8; 512];
@@ -312,6 +313,31 @@ fn test_verify_tampered_proof_linearisation_eval_returns_false() {
 
     let result = client.verify(&commitment, &payee, &AMOUNT, &nullifier, &tampered);
     assert!(!result, "tampered linearisation_eval must return false");
+}
+
+#[test]
+fn test_verify_wrong_vk_in_proof_returns_false() {
+    let (env, _, admin, client) = setup();
+    let vk = Bytes::from_slice(&env, VALID_VK);
+    client.set_vk(&admin, &vk);
+
+    let payee = Address::generate(&env);
+    let commitment = BytesN::from_array(&env, &COMMITMENT);
+    let nullifier = BytesN::from_array(&env, &NULLIFIER);
+    let (_, pi_hash) = build_public_inputs(&env, &commitment, &payee, AMOUNT, &nullifier);
+
+    // Build proof with a different VK
+    let mut other_vk_bytes = [0u8; 64];
+    other_vk_bytes[..VALID_VK.len()].copy_from_slice(VALID_VK);
+    other_vk_bytes[..4].copy_from_slice(&32768u32.to_be_bytes());
+    let other_vk = Bytes::from_slice(&env, &other_vk_bytes);
+    let proof = build_valid_proof(&env, &other_vk, &pi_hash);
+
+    let result = client.verify(&commitment, &payee, &AMOUNT, &nullifier, &proof);
+    assert!(
+        !result,
+        "proof built with a different VK must fail verification"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -410,7 +436,7 @@ fn test_verify_is_pure_no_storage_write() {
     let commitment = BytesN::from_array(&env, &COMMITMENT);
     let nullifier = BytesN::from_array(&env, &NULLIFIER);
     let (_, pi_hash) = build_public_inputs(&env, &commitment, &payee, AMOUNT, &nullifier);
-    let proof = build_valid_proof(&env, &pi_hash);
+    let proof = build_valid_proof(&env, &vk, &pi_hash);
 
     // Capture vk_hash before verify
     let hash_before = client.get_vk_hash();
@@ -427,15 +453,10 @@ fn test_verify_is_pure_no_storage_write() {
     );
 
     // Also verify that no unexpected auth calls were made
-    // (verify is pure; no cross-contract calls, no storage writes)
     let auths = env.auths();
-    // After init + set_vk + verify: only init and set_vk should have auth records
-    // verify must NOT appear in auths as it requires no auth
     for (addr, _) in &auths {
-        // verify does not call require_auth on any address
-        let _ = addr; // just asserting no panic; the count check below is the real assertion
+        let _ = addr;
     }
-    // init (1) + set_vk (1) = 2 auth records; verify contributes 0
     assert!(
         auths.len() <= 2,
         "verify must not emit auth calls; found {} total auth records",
@@ -457,7 +478,7 @@ fn test_vk_rotation_invalidates_old_proof() {
     let commitment = BytesN::from_array(&env, &COMMITMENT);
     let nullifier = BytesN::from_array(&env, &NULLIFIER);
     let (_, pi_hash) = build_public_inputs(&env, &commitment, &payee, AMOUNT, &nullifier);
-    let proof = build_valid_proof(&env, &pi_hash);
+    let proof = build_valid_proof(&env, &vk1, &pi_hash);
 
     // Valid under vk1
     assert!(client.verify(&commitment, &payee, &AMOUNT, &nullifier, &proof));
@@ -550,7 +571,7 @@ fn test_verify_deterministic_across_ledger_sequences() {
     let commitment = BytesN::from_array(&env, &COMMITMENT);
     let nullifier = BytesN::from_array(&env, &NULLIFIER);
     let (_, pi_hash) = build_public_inputs(&env, &commitment, &payee, AMOUNT, &nullifier);
-    let proof = build_valid_proof(&env, &pi_hash);
+    let proof = build_valid_proof(&env, &vk, &pi_hash);
 
     let r1 = client.verify(&commitment, &payee, &AMOUNT, &nullifier, &proof);
 
